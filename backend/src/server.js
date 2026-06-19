@@ -1,21 +1,8 @@
-const path = require("path");
-
-console.log("__dirname =", __dirname);
-console.log("ENV PATH =", path.join(__dirname, "../.env"));
-
-// require("dotenv").config({
-//   path: path.join(__dirname, "../.env")
-// });
-const fs = require("fs");
-
-console.log("ENV FILE CONTENT:");
-console.log(fs.readFileSync(".env", "utf8"));
-require("dotenv").config();
-
-console.log(process.env.GROQ_API_KEY);
-console.log(process.env.MONGODB_URI);
 // const path = require("path");
-// require("dotenv").config({ path: path.join(__dirname, "../.env") });
+// console.log("__dirname =", __dirname);
+// console.log("ENV PATH =", path.join(__dirname, "../.env"));
+
+require("dotenv").config();
 
 console.log("MONGODB_URI loaded:", process.env.MONGODB_URI ? "YES ✅" : "NO ❌");
 console.log("GROQ_API_KEY loaded:", process.env.GROQ_API_KEY ? "YES ✅" : "NO ❌");
