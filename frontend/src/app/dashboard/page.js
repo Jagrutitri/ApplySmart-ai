@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Navbar from "../../components/Navbar";
 import { useAuth } from "../../context/AuthContext";
+import { API_URL } from "../../lib/config";
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -101,7 +102,7 @@ export default function DashboardPage() {
     setError("");
     setLoading(true);
     try {
-      const res = await fetch("http://localhost:4000/analyze", {
+      const res = await fetch(`${API_URL}/analyze`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
