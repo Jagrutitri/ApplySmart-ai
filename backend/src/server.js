@@ -21,7 +21,7 @@ app.use(express.json({ limit: "10mb" }));
 
 // ─── Groq ─────────────────────────────────────────────────────────────────────
 const groq  = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const MODEL = "llama-3.1-8b-instant";
+const MODEL = "llama3-8b-8192";
 
 async function askGroq(systemMsg, userMsg, maxTokens = 800) {
   const completion = await groq.chat.completions.create({
