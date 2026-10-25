@@ -19,9 +19,9 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
-// ─── Groq ─────────────────────────────────────────────────────────────────────
+// Groq
 const groq  = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
+const MODEL = "openai/gpt-oss-20b";
 
 async function askGroq(systemMsg, userMsg, maxTokens = 800) {
   const completion = await groq.chat.completions.create({
@@ -36,7 +36,7 @@ async function askGroq(systemMsg, userMsg, maxTokens = 800) {
   return completion.choices[0].message.content.trim();
 }
 
-// ─── MongoDB ──────────────────────────────────────────────────────────────────
+// MongoDB 
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log("✅  MongoDB connected"))
   .catch((err) => console.error("❌  MongoDB error:", err.message));
@@ -111,7 +111,7 @@ app.get("/auth/me", authMiddleware, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// Helpers
 function cleanText(text) {
   if (!text) return "";
   return text
@@ -133,7 +133,7 @@ function extractJSON(text) {
 
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
-// ─── AI: Extract resume skills ────────────────────────────────────────────────
+// AI: Extract resume skills 
 async function extractResumeSkills(resumeText) {
   const system = `You are a skill extractor. Return ONLY a JSON array of strings. No explanation.`;
   const user   = `Extract ALL technical skills, programming languages, frameworks, tools, databases, and technologies from this resume.
@@ -149,7 +149,7 @@ Return ONLY a JSON array like: ["Python","React","MySQL","Git","Docker"]`;
   return Array.isArray(result) ? result : [];
 }
 
-// ─── AI: Extract JD skills ────────────────────────────────────────────────────
+//AI: Extract JD skills
 async function extractJDSkills(jdText) {
   const system = `You are a skill extractor. Return ONLY a JSON array of strings. No explanation.`;
   const user   = `Extract ALL required technical skills, languages, frameworks, and tools from this job description.
@@ -165,7 +165,7 @@ Return ONLY a JSON array like: ["Python","React","MySQL","Git"]`;
   return Array.isArray(result) ? result : [];
 }
 
-// ─── AI: Feedback ─────────────────────────────────────────────────────────────
+//AI: Feedback
 async function getFeedback(resumeText, jdText, matchScore, missingSkills) {
   const system = `You are a career coach. Return ONLY a JSON array. No explanation.`;
   const user   = `Give 3 specific improvement tips for this resume vs job description.
@@ -193,7 +193,7 @@ Return ONLY this JSON array with exactly 3 objects:
   ];
 }
 
-// ─── AI: ATS ──────────────────────────────────────────────────────────────────
+// AI: ATS
 async function getATS(resumeText) {
   const system = `You are an ATS expert. Return ONLY valid JSON. No explanation.`;
   const user   = `Analyze this resume for ATS compatibility. Score 0-100.
@@ -224,7 +224,7 @@ Return ONLY this JSON:
   };
 }
 
-// ─── AI: Keywords ─────────────────────────────────────────────────────────────
+//AI: Keywords 
 async function getKeywords(resumeText, jdText) {
   const system = `You are a keyword analyst. Return ONLY valid JSON. No explanation.`;
   const user   = `Compare keywords: resume vs job description.
@@ -268,7 +268,7 @@ Return ONLY this JSON:
   };
 }
 
-// ─── AI: Tone ─────────────────────────────────────────────────────────────────
+// AI: Tone
 async function getTone(resumeText) {
   const system = `You are a writing analyst. Return ONLY valid JSON. No explanation.`;
   const user   = `Analyze the professional tone of this resume.
@@ -302,7 +302,7 @@ Return ONLY this JSON:
   };
 }
 
-// ─── POST /analyze ────────────────────────────────────────────────────────────
+// POST /analyze
 app.post("/analyze", async (req, res) => {
   try {
     const { resumetext, jobdescription, userId } = req.body;
@@ -317,7 +317,7 @@ app.post("/analyze", async (req, res) => {
     if (cleanResume.length < 50)
       return res.status(400).json({ error: "Resume text too short. Please paste your resume text directly in the text box." });
 
-    // ── Step 1: Extract skills ───────────────────────────────────────────
+    // Step 1: Extract skills
     console.log("Step 1: Extracting resume skills...");
     const resumeSkills = await extractResumeSkills(cleanResume);
     console.log(`  Found ${resumeSkills.length}:`, resumeSkills.slice(0, 6).join(", "));
@@ -328,7 +328,7 @@ app.post("/analyze", async (req, res) => {
     const jdSkills = await extractJDSkills(cleanJD);
     console.log(`  Found ${jdSkills.length}:`, jdSkills.slice(0, 6).join(", "));
 
-    // ── Step 2: Match score ──────────────────────────────────────────────
+    //Step 2: Match score
     const resumeLower   = resumeSkills.map(s => s.toLowerCase().trim());
     const matchedSkills = jdSkills.filter(skill => {
       const sl = skill.toLowerCase().trim();
@@ -344,34 +344,34 @@ app.post("/analyze", async (req, res) => {
 
     await wait(600);
 
-    // ── Step 3: Feedback ─────────────────────────────────────────────────
+    // Step 3: Feedback 
     console.log("Step 3: Generating feedback...");
     const feedback = await getFeedback(cleanResume, cleanJD, matchScore, missingSkills);
 
     await wait(600);
 
-    // ── Step 4: ATS ──────────────────────────────────────────────────────
+    // Step 4: ATS 
     console.log("Step 4: ATS analysis...");
     const atsResult = await getATS(cleanResume);
 
     await wait(600);
 
-    // ── Step 5: Keywords ─────────────────────────────────────────────────
+    // Step 5: Keywords 
     console.log("Step 5: Keyword analysis...");
     const kwResult = await getKeywords(cleanResume, cleanJD);
 
     await wait(600);
 
-    // ── Step 6: Tone ─────────────────────────────────────────────────────
+    //Step 6: Tone 
     console.log("Step 6: Tone analysis...");
     const toneResult = await getTone(cleanResume);
 
-    // ── Step 7: Learning resources (from verified database — no AI) ──────
+    // ── Step 7: Learning resources (from verified database — no AI) 
     console.log("Step 7: Getting learning resources for missing skills...");
     const learningResources = getLearningResources(missingSkills);
     console.log(`  Resources found: ${learningResources.length}`);
 
-    // ── Save to MongoDB ───────────────────────────────────────────────────
+    // Save to MongoDB 
     if (userId) {
       await User.findByIdAndUpdate(userId, {
         $push: {
