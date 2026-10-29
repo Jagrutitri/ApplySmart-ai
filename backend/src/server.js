@@ -1,7 +1,3 @@
-// const path = require("path");
-// console.log("__dirname =", __dirname);
-// console.log("ENV PATH =", path.join(__dirname, "../.env"));
-
 require("dotenv").config();
 
 console.log("MONGODB_URI loaded:", process.env.MONGODB_URI ? "YES ✅" : "NO ❌");
@@ -19,7 +15,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
-// Groq
+// ─── Groq Setup ───────────────────────────────────────────────────────────────
 const groq  = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const MODEL = "openai/gpt-oss-20b";
 
@@ -36,7 +32,7 @@ async function askGroq(systemMsg, userMsg, maxTokens = 800) {
   return completion.choices[0].message.content.trim();
 }
 
-// MongoDB 
+// ─── MongoDB ──────────────────────────────────────────────────────────────────
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log("✅  MongoDB connected"))
   .catch((err) => console.error("❌  MongoDB error:", err.message));
@@ -56,6 +52,7 @@ const userSchema = new mongoose.Schema({
 });
 const User = mongoose.model("User", userSchema);
 
+// ─── Auth Middleware ──────────────────────────────────────────────────────────
 const authMiddleware = (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) return res.status(401).json({ error: "No token provided" });
@@ -65,6 +62,7 @@ const authMiddleware = (req, res, next) => {
   } catch { res.status(401).json({ error: "Invalid token" }); }
 };
 
+// ─── Auth Routes ──────────────────────────────────────────────────────────────
 app.post("/auth/register", async (req, res) => {
   try {
     const { name, email, password } = req.body;
@@ -111,7 +109,7 @@ app.get("/auth/me", authMiddleware, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Helpers
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 function cleanText(text) {
   if (!text) return "";
   return text
@@ -133,41 +131,45 @@ function extractJSON(text) {
 
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
-// AI: Extract resume skills 
+// ─── AI: Extract Resume Skills ────────────────────────────────────────────────
 async function extractResumeSkills(resumeText) {
-  const system = `You are a skill extractor. Return ONLY a JSON array of strings. No explanation.`;
+  const system = `You are a skill extractor. Return ONLY a JSON array of strings. No explanation. No markdown. No extra text.`;
   const user   = `Extract ALL technical skills, programming languages, frameworks, tools, databases, and technologies from this resume.
 
 Resume:
 ${resumeText.slice(0, 2500)}
 
-Return ONLY a JSON array like: ["Python","React","MySQL","Git","Docker"]`;
+Return ONLY a JSON array like: ["Python","React","MySQL","Git","Docker","Node.js"]
+Nothing else. Just the array.`;
 
   const raw    = await askGroq(system, user, 500);
-  console.log("Resume skills →", raw.slice(0, 120));
+  console.log("Resume skills raw →", raw.slice(0, 200));
   const result = extractJSON(raw);
+  console.log("Resume skills parsed →", result ? result.slice(0,5) : "FAILED");
   return Array.isArray(result) ? result : [];
 }
 
-//AI: Extract JD skills
+// ─── AI: Extract JD Skills ────────────────────────────────────────────────────
 async function extractJDSkills(jdText) {
-  const system = `You are a skill extractor. Return ONLY a JSON array of strings. No explanation.`;
-  const user   = `Extract ALL required technical skills, languages, frameworks, and tools from this job description.
+  const system = `You are a skill extractor. Return ONLY a JSON array of strings. No explanation. No markdown. No extra text.`;
+  const user   = `Extract ALL required technical skills, programming languages, frameworks, tools, databases, and technologies from this job description.
 
 Job Description:
 ${jdText.slice(0, 2000)}
 
-Return ONLY a JSON array like: ["Python","React","MySQL","Git"]`;
+Return ONLY a JSON array like: ["Python","React","MySQL","Git","Docker"]
+Nothing else. Just the array.`;
 
   const raw    = await askGroq(system, user, 400);
-  console.log("JD skills →", raw.slice(0, 120));
+  console.log("JD skills raw →", raw.slice(0, 200));
   const result = extractJSON(raw);
+  console.log("JD skills parsed →", result ? result.slice(0,5) : "FAILED");
   return Array.isArray(result) ? result : [];
 }
 
-//AI: Feedback
+// ─── AI: Feedback ─────────────────────────────────────────────────────────────
 async function getFeedback(resumeText, jdText, matchScore, missingSkills) {
-  const system = `You are a career coach. Return ONLY a JSON array. No explanation.`;
+  const system = `You are a career coach. Return ONLY a JSON array. No explanation. No markdown.`;
   const user   = `Give 3 specific improvement tips for this resume vs job description.
 
 Resume: ${resumeText.slice(0, 800)}
@@ -193,9 +195,9 @@ Return ONLY this JSON array with exactly 3 objects:
   ];
 }
 
-// AI: ATS
+// ─── AI: ATS ──────────────────────────────────────────────────────────────────
 async function getATS(resumeText) {
-  const system = `You are an ATS expert. Return ONLY valid JSON. No explanation.`;
+  const system = `You are an ATS expert. Return ONLY valid JSON. No explanation. No markdown.`;
   const user   = `Analyze this resume for ATS compatibility. Score 0-100.
 
 Resume: ${resumeText.slice(0, 1500)}
@@ -224,9 +226,9 @@ Return ONLY this JSON:
   };
 }
 
-//AI: Keywords 
+// ─── AI: Keywords ─────────────────────────────────────────────────────────────
 async function getKeywords(resumeText, jdText) {
-  const system = `You are a keyword analyst. Return ONLY valid JSON. No explanation.`;
+  const system = `You are a keyword analyst. Return ONLY valid JSON. No explanation. No markdown.`;
   const user   = `Compare keywords: resume vs job description.
 
 Resume: ${resumeText.slice(0, 1000)}
@@ -268,9 +270,9 @@ Return ONLY this JSON:
   };
 }
 
-// AI: Tone
+// ─── AI: Tone ─────────────────────────────────────────────────────────────────
 async function getTone(resumeText) {
-  const system = `You are a writing analyst. Return ONLY valid JSON. No explanation.`;
+  const system = `You are a writing analyst. Return ONLY valid JSON. No explanation. No markdown.`;
   const user   = `Analyze the professional tone of this resume.
 
 Resume: ${resumeText.slice(0, 1200)}
@@ -302,7 +304,7 @@ Return ONLY this JSON:
   };
 }
 
-// POST /analyze
+// ─── POST /analyze ────────────────────────────────────────────────────────────
 app.post("/analyze", async (req, res) => {
   try {
     const { resumetext, jobdescription, userId } = req.body;
@@ -317,7 +319,6 @@ app.post("/analyze", async (req, res) => {
     if (cleanResume.length < 50)
       return res.status(400).json({ error: "Resume text too short. Please paste your resume text directly in the text box." });
 
-    // Step 1: Extract skills
     console.log("Step 1: Extracting resume skills...");
     const resumeSkills = await extractResumeSkills(cleanResume);
     console.log(`  Found ${resumeSkills.length}:`, resumeSkills.slice(0, 6).join(", "));
@@ -328,7 +329,6 @@ app.post("/analyze", async (req, res) => {
     const jdSkills = await extractJDSkills(cleanJD);
     console.log(`  Found ${jdSkills.length}:`, jdSkills.slice(0, 6).join(", "));
 
-    //Step 2: Match score
     const resumeLower   = resumeSkills.map(s => s.toLowerCase().trim());
     const matchedSkills = jdSkills.filter(skill => {
       const sl = skill.toLowerCase().trim();
@@ -344,34 +344,28 @@ app.post("/analyze", async (req, res) => {
 
     await wait(600);
 
-    // Step 3: Feedback 
     console.log("Step 3: Generating feedback...");
     const feedback = await getFeedback(cleanResume, cleanJD, matchScore, missingSkills);
 
     await wait(600);
 
-    // Step 4: ATS 
     console.log("Step 4: ATS analysis...");
     const atsResult = await getATS(cleanResume);
 
     await wait(600);
 
-    // Step 5: Keywords 
     console.log("Step 5: Keyword analysis...");
     const kwResult = await getKeywords(cleanResume, cleanJD);
 
     await wait(600);
 
-    //Step 6: Tone 
     console.log("Step 6: Tone analysis...");
     const toneResult = await getTone(cleanResume);
 
-    // ── Step 7: Learning resources (from verified database — no AI) 
-    console.log("Step 7: Getting learning resources for missing skills...");
+    console.log("Step 7: Getting learning resources...");
     const learningResources = getLearningResources(missingSkills);
     console.log(`  Resources found: ${learningResources.length}`);
 
-    // Save to MongoDB 
     if (userId) {
       await User.findByIdAndUpdate(userId, {
         $push: {
