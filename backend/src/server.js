@@ -273,7 +273,7 @@ app.post("/auth/login", async (req, res) => {
     const token = jwt.sign(
       { id: user._id, email: user.email, name: user.name },
       process.env.JWT_SECRET || "applysmart_secret",
-      { expiresIn: "7d" }
+      { expiresIn: "1h" }
     );
     res.json({ token, user: { id: user._id, name: user.name, email: user.email } });
   } catch (err) { res.status(500).json({ error: err.message }); }
