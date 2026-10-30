@@ -19,17 +19,63 @@ app.use(express.json({ limit: "10mb" }));
 const groq  = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const MODEL = "openai/gpt-oss-20b";
 
-async function askGroq(systemMsg, userMsg, maxTokens = 800) {
+// Ultra-robust JSON extractor
+function extractJSON(text) {
+  if (!text) return null;
+
+  // Step 1: Remove markdown fences
+  let clean = text
+    .replace(/```json\s*/gi, "")
+    .replace(/```\s*/gi, "")
+    .trim();
+
+  // Step 2: Try direct parse
+  try { return JSON.parse(clean); } catch {}
+
+  // Step 3: Find JSON object { }
+  const o1 = clean.indexOf("{");
+  const o2 = clean.lastIndexOf("}");
+  if (o1 !== -1 && o2 > o1) {
+    try { return JSON.parse(clean.slice(o1, o2 + 1)); } catch {}
+  }
+
+  // Step 4: Find JSON array [ ]
+  const a1 = clean.indexOf("[");
+  const a2 = clean.lastIndexOf("]");
+  if (a1 !== -1 && a2 > a1) {
+    try { return JSON.parse(clean.slice(a1, a2 + 1)); } catch {}
+  }
+
+  // Step 5: Fix common issues — trailing commas, unquoted keys
+  try {
+    const fixed = clean
+      .replace(/,\s*([}\]])/g, "$1")       // remove trailing commas
+      .replace(/(['"])?([a-zA-Z_]+)(['"])?\s*:/g, '"$2":') // quote keys
+      .replace(/:\s*'([^']*)'/g, ': "$1"'); // single to double quotes
+    return JSON.parse(fixed);
+  } catch {}
+
+  console.error("extractJSON FAILED on:", clean.slice(0, 300));
+  return null;
+}
+
+async function askGroq(prompt, maxTokens = 800) {
   const completion = await groq.chat.completions.create({
     model: MODEL,
     messages: [
-      { role: "system", content: systemMsg },
-      { role: "user",   content: userMsg   },
+      {
+        role: "system",
+        content: "You are a JSON API. You MUST respond with ONLY valid JSON. No markdown, no code blocks, no explanation, no text before or after the JSON. Start your response directly with { or [."
+      },
+      { role: "user", content: prompt }
     ],
     temperature: 0.1,
-    max_tokens:  maxTokens,
+    max_tokens: maxTokens,
   });
-  return completion.choices[0].message.content.trim();
+
+  const raw = completion.choices[0].message.content.trim();
+  console.log("RAW AI →", raw.slice(0, 150));
+  return raw;
 }
 
 // ─── MongoDB ──────────────────────────────────────────────────────────────────
@@ -52,7 +98,6 @@ const userSchema = new mongoose.Schema({
 });
 const User = mongoose.model("User", userSchema);
 
-// ─── Auth Middleware ──────────────────────────────────────────────────────────
 const authMiddleware = (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) return res.status(401).json({ error: "No token provided" });
@@ -62,7 +107,6 @@ const authMiddleware = (req, res, next) => {
   } catch { res.status(401).json({ error: "Invalid token" }); }
 };
 
-// ─── Auth Routes ──────────────────────────────────────────────────────────────
 app.post("/auth/register", async (req, res) => {
   try {
     const { name, email, password } = req.body;
@@ -109,7 +153,6 @@ app.get("/auth/me", authMiddleware, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 function cleanText(text) {
   if (!text) return "";
   return text
@@ -118,189 +161,265 @@ function cleanText(text) {
     .trim();
 }
 
-function extractJSON(text) {
-  if (!text) return null;
-  const clean = text.replace(/```json/gi, "").replace(/```/g, "").trim();
-  try { return JSON.parse(clean); } catch {}
-  const o1 = clean.indexOf("{"), o2 = clean.lastIndexOf("}");
-  if (o1 !== -1 && o2 > o1) { try { return JSON.parse(clean.slice(o1, o2+1)); } catch {} }
-  const a1 = clean.indexOf("["), a2 = clean.lastIndexOf("]");
-  if (a1 !== -1 && a2 > a1) { try { return JSON.parse(clean.slice(a1, a2+1)); } catch {} }
-  return null;
-}
-
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
 // ─── AI: Extract Resume Skills ────────────────────────────────────────────────
 async function extractResumeSkills(resumeText) {
-  const system = `You are a skill extractor. Return ONLY a JSON array of strings. No explanation. No markdown. No extra text.`;
-  const user   = `Extract ALL technical skills, programming languages, frameworks, tools, databases, and technologies from this resume.
+  const prompt = `Extract ALL technical skills from this resume. Include: programming languages, frameworks, libraries, tools, databases, cloud services, and technologies.
 
-Resume:
+Resume text:
 ${resumeText.slice(0, 2500)}
 
-Return ONLY a JSON array like: ["Python","React","MySQL","Git","Docker","Node.js"]
-Nothing else. Just the array.`;
+Respond with ONLY a JSON array of skill strings. Example format:
+["JavaScript", "React", "Node.js", "MongoDB", "Python", "Git", "Docker", "AWS", "MySQL", "Express.js"]
 
-  const raw    = await askGroq(system, user, 500);
-  console.log("Resume skills raw →", raw.slice(0, 200));
+Include every technical skill you can find. Start directly with [`;
+
+  const raw    = await askGroq(prompt, 600);
   const result = extractJSON(raw);
-  console.log("Resume skills parsed →", result ? result.slice(0,5) : "FAILED");
-  return Array.isArray(result) ? result : [];
+  const skills = Array.isArray(result) ? result : [];
+  console.log(`Resume skills (${skills.length}):`, skills.slice(0, 8).join(", "));
+  return skills;
 }
 
 // ─── AI: Extract JD Skills ────────────────────────────────────────────────────
 async function extractJDSkills(jdText) {
-  const system = `You are a skill extractor. Return ONLY a JSON array of strings. No explanation. No markdown. No extra text.`;
-  const user   = `Extract ALL required technical skills, programming languages, frameworks, tools, databases, and technologies from this job description.
+  const prompt = `Extract ALL required technical skills from this job description. Include: programming languages, frameworks, tools, databases, and technologies mentioned.
 
-Job Description:
+Job description:
 ${jdText.slice(0, 2000)}
 
-Return ONLY a JSON array like: ["Python","React","MySQL","Git","Docker"]
-Nothing else. Just the array.`;
+Respond with ONLY a JSON array of skill strings. Example format:
+["Python", "React", "Node.js", "PostgreSQL", "Docker", "AWS", "REST API"]
 
-  const raw    = await askGroq(system, user, 400);
-  console.log("JD skills raw →", raw.slice(0, 200));
+Include every technical requirement you find. Start directly with [`;
+
+  const raw    = await askGroq(prompt, 500);
   const result = extractJSON(raw);
-  console.log("JD skills parsed →", result ? result.slice(0,5) : "FAILED");
-  return Array.isArray(result) ? result : [];
+  const skills = Array.isArray(result) ? result : [];
+  console.log(`JD skills (${skills.length}):`, skills.slice(0, 8).join(", "));
+  return skills;
 }
 
 // ─── AI: Feedback ─────────────────────────────────────────────────────────────
 async function getFeedback(resumeText, jdText, matchScore, missingSkills) {
-  const system = `You are a career coach. Return ONLY a JSON array. No explanation. No markdown.`;
-  const user   = `Give 3 specific improvement tips for this resume vs job description.
+  const prompt = `You are a career coach. Analyze this specific resume against this specific job description and give 3 personalized improvement tips.
 
-Resume: ${resumeText.slice(0, 800)}
-Job: ${jdText.slice(0, 600)}
-Match: ${matchScore}%
-Missing skills: ${missingSkills.slice(0, 5).join(", ") || "none"}
+Resume:
+${resumeText.slice(0, 1000)}
 
-Return ONLY this JSON array with exactly 3 objects:
+Job Description:
+${jdText.slice(0, 700)}
+
+Match Score: ${matchScore}%
+Skills the candidate is missing: ${missingSkills.slice(0, 6).join(", ") || "none identified"}
+
+Give 3 specific, actionable tips based on what you actually see in THIS resume vs THIS job.
+
+Respond with ONLY this JSON array:
 [
-  {"title":"tip title","description":"specific advice"},
-  {"title":"tip title","description":"specific advice"},
-  {"title":"tip title","description":"specific advice"}
-]`;
+  {"title": "specific tip title", "description": "specific advice based on this resume and job"},
+  {"title": "specific tip title", "description": "specific advice based on this resume and job"},
+  {"title": "specific tip title", "description": "specific advice based on this resume and job"}
+]
 
-  const raw    = await askGroq(system, user, 500);
-  console.log("Feedback →", raw.slice(0, 120));
+Start directly with [`;
+
+  const raw    = await askGroq(prompt, 600);
   const result = extractJSON(raw);
   if (Array.isArray(result) && result.length >= 3) return result.slice(0, 3);
   return [
-    { title: "Quantify your achievements", description: "Add numbers and percentages to your project results to show measurable impact." },
-    { title: "Add missing keywords", description: `Add ${missingSkills.slice(0, 3).join(", ")} to your skills section or project descriptions.` },
-    { title: "Tailor your summary", description: "Rewrite your professional summary to directly address this job's specific requirements." },
+    { title: "Quantify your achievements", description: "Add specific numbers and percentages to your project results to demonstrate measurable impact." },
+    { title: "Add missing technical skills", description: `Consider adding ${missingSkills.slice(0, 3).join(", ")} to your skillset and mention them in project descriptions.` },
+    { title: "Tailor your professional summary", description: "Rewrite your summary to directly mirror the language and requirements in this job description." },
   ];
 }
 
-// ─── AI: ATS ──────────────────────────────────────────────────────────────────
+// ─── AI: ATS Analysis ─────────────────────────────────────────────────────────
 async function getATS(resumeText) {
-  const system = `You are an ATS expert. Return ONLY valid JSON. No explanation. No markdown.`;
-  const user   = `Analyze this resume for ATS compatibility. Score 0-100.
+  const prompt = `You are an ATS (Applicant Tracking System) expert. Carefully analyze this specific resume and give it a real ATS compatibility score.
 
-Resume: ${resumeText.slice(0, 1500)}
+Resume:
+${resumeText.slice(0, 2000)}
 
-Return ONLY this JSON:
+Score this resume on these criteria (be strict and accurate, not generous):
+- Standard section headers like Experience, Education, Skills, Summary (20 points)
+- No complex tables, columns, or text boxes (15 points)
+- Contact information with email and phone present (15 points)
+- Bullet points used for job descriptions (10 points)
+- Good keyword density matching typical job descriptions (20 points)
+- Clean consistent formatting (10 points)
+- Quantified achievements present (10 points)
+
+Look at the actual resume content and give a REAL score based on what you see.
+
+Respond with ONLY this JSON object:
 {
-  "ats_score": 78,
-  "grade": "B",
-  "summary": "One sentence ATS assessment.",
-  "passed_checks": ["thing done correctly","another thing"],
+  "ats_score": <actual score 0-100 based on this specific resume>,
+  "grade": "<A if 90+, B if 75-89, C if 60-74, D if 45-59, F if below 45>",
+  "summary": "<one specific sentence about THIS resume's ATS compatibility>",
+  "passed_checks": ["<specific thing this resume does correctly>", "<another specific thing>"],
   "issues": [
-    {"severity":"high","issue":"specific issue","fix":"how to fix"},
-    {"severity":"medium","issue":"specific issue","fix":"how to fix"}
+    {"severity": "high", "issue": "<specific issue found in this resume>", "fix": "<specific fix>"},
+    {"severity": "medium", "issue": "<specific issue found>", "fix": "<specific fix>"}
   ]
-}`;
+}
 
-  const raw    = await askGroq(system, user, 600);
-  console.log("ATS →", raw.slice(0, 120));
+Start directly with {`;
+
+  const raw    = await askGroq(prompt, 700);
   const result = extractJSON(raw);
+  console.log("ATS result:", result ? `score=${result.ats_score}` : "FAILED - using fallback");
   if (result && typeof result.ats_score === "number") return result;
+
+  // If AI fails, calculate a rough score from resume content
+  const hasEmail    = /[\w.]+@[\w.]+/.test(resumeText);
+  const hasPhone    = /[+]?[\d\s\-()]{10,}/.test(resumeText);
+  const hasBullets  = resumeText.includes("•") || resumeText.includes("-") || resumeText.includes("*");
+  const hasSkills   = /skill|technology|tools/i.test(resumeText);
+  const hasExp      = /experience|work|employment|internship/i.test(resumeText);
+  const hasEdu      = /education|university|college|degree|bachelor/i.test(resumeText);
+  let score = 40;
+  if (hasEmail)   score += 10;
+  if (hasPhone)   score += 8;
+  if (hasBullets) score += 10;
+  if (hasSkills)  score += 12;
+  if (hasExp)     score += 10;
+  if (hasEdu)     score += 10;
+  const grade = score >= 90 ? "A" : score >= 75 ? "B" : score >= 60 ? "C" : score >= 45 ? "D" : "F";
+
   return {
-    ats_score: 65, grade: "C",
-    summary: "Resume has moderate ATS compatibility.",
-    passed_checks: ["Contains technical keywords", "Text is readable"],
-    issues: [{ severity: "medium", issue: "Add clear section headers", fix: "Use: Summary, Experience, Education, Skills" }]
+    ats_score: score,
+    grade,
+    summary: `Resume scored ${score}/100 on ATS compatibility based on structural analysis.`,
+    passed_checks: [
+      hasEmail ? "Email address found" : "Add your email address",
+      hasPhone ? "Phone number present" : "Add your phone number",
+      hasExp   ? "Work experience section detected" : "Add work experience",
+    ].filter(c => !c.startsWith("Add")),
+    issues: [
+      !hasBullets ? { severity: "high", issue: "No bullet points detected", fix: "Use bullet points for all job/project descriptions" } : null,
+      !hasSkills  ? { severity: "high", issue: "No skills section found", fix: "Add a dedicated Technical Skills section" } : null,
+    ].filter(Boolean)
   };
 }
 
 // ─── AI: Keywords ─────────────────────────────────────────────────────────────
 async function getKeywords(resumeText, jdText) {
-  const system = `You are a keyword analyst. Return ONLY valid JSON. No explanation. No markdown.`;
-  const user   = `Compare keywords: resume vs job description.
+  const prompt = `Analyze keyword matching between this resume and job description. Find the most important keywords from the job description and check each one in the resume.
 
-Resume: ${resumeText.slice(0, 1000)}
-Job: ${jdText.slice(0, 800)}
+Resume:
+${resumeText.slice(0, 1200)}
 
-Return ONLY this JSON:
+Job Description:
+${jdText.slice(0, 1000)}
+
+Check each important keyword from the JD: does it appear in the resume? Be thorough and accurate.
+
+Calculate:
+- keyword_score: percentage of important JD keywords found in resume (0-100)
+- density_score: how well the resume uses keywords throughout (0-100)
+
+Respond with ONLY this JSON:
 {
-  "keyword_score": 68,
-  "density_score": 62,
-  "recommendation": "One specific actionable keyword tip.",
+  "keyword_score": <real calculated percentage>,
+  "density_score": <real score based on resume>,
+  "recommendation": "<one specific tip for this resume>",
   "high_priority": [
-    {"keyword":"keyword from JD","in_resume":true},
-    {"keyword":"keyword from JD","in_resume":false},
-    {"keyword":"keyword from JD","in_resume":true},
-    {"keyword":"keyword from JD","in_resume":false},
-    {"keyword":"keyword from JD","in_resume":true},
-    {"keyword":"keyword from JD","in_resume":false},
-    {"keyword":"keyword from JD","in_resume":true},
-    {"keyword":"keyword from JD","in_resume":false}
+    {"keyword": "<actual keyword from JD>", "in_resume": <true if found in resume, false if not>},
+    {"keyword": "<actual keyword from JD>", "in_resume": <true or false>},
+    {"keyword": "<actual keyword from JD>", "in_resume": <true or false>},
+    {"keyword": "<actual keyword from JD>", "in_resume": <true or false>},
+    {"keyword": "<actual keyword from JD>", "in_resume": <true or false>},
+    {"keyword": "<actual keyword from JD>", "in_resume": <true or false>},
+    {"keyword": "<actual keyword from JD>", "in_resume": <true or false>},
+    {"keyword": "<actual keyword from JD>", "in_resume": <true or false>}
   ],
   "medium_priority": [
-    {"keyword":"keyword from JD","in_resume":true},
-    {"keyword":"keyword from JD","in_resume":false},
-    {"keyword":"keyword from JD","in_resume":true},
-    {"keyword":"keyword from JD","in_resume":false},
-    {"keyword":"keyword from JD","in_resume":true},
-    {"keyword":"keyword from JD","in_resume":false}
+    {"keyword": "<actual keyword from JD>", "in_resume": <true or false>},
+    {"keyword": "<actual keyword from JD>", "in_resume": <true or false>},
+    {"keyword": "<actual keyword from JD>", "in_resume": <true or false>},
+    {"keyword": "<actual keyword from JD>", "in_resume": <true or false>},
+    {"keyword": "<actual keyword from JD>", "in_resume": <true or false>},
+    {"keyword": "<actual keyword from JD>", "in_resume": <true or false>}
   ]
-}`;
+}
 
-  const raw    = await askGroq(system, user, 700);
-  console.log("Keywords →", raw.slice(0, 120));
+Start directly with {`;
+
+  const raw    = await askGroq(prompt, 800);
   const result = extractJSON(raw);
+  console.log("Keywords result:", result ? `score=${result.keyword_score}` : "FAILED - using fallback");
   if (result && typeof result.keyword_score === "number") return result;
   return {
-    keyword_score: 60, density_score: 55,
-    recommendation: "Add more specific keywords from the job description.",
+    keyword_score: 50, density_score: 45,
+    recommendation: "Add more specific technical keywords from the job description into your resume.",
     high_priority: [], medium_priority: []
   };
 }
 
 // ─── AI: Tone ─────────────────────────────────────────────────────────────────
 async function getTone(resumeText) {
-  const system = `You are a writing analyst. Return ONLY valid JSON. No explanation. No markdown.`;
-  const user   = `Analyze the professional tone of this resume.
+  const prompt = `Analyze the professional writing tone and quality of this specific resume. Be accurate and critical, not generic.
 
-Resume: ${resumeText.slice(0, 1200)}
+Resume:
+${resumeText.slice(0, 1500)}
 
-Return ONLY this JSON:
+Evaluate this specific resume on:
+- tone_score: overall professional tone (0-100)
+- authority_score: confidence and leadership language (0-100)  
+- clarity_score: how clear and readable (0-100)
+- action_verbs_score: use of strong action verbs like "Led", "Built", "Achieved" (0-100)
+
+Look at the actual language used and give REAL scores.
+
+Respond with ONLY this JSON:
 {
-  "tone_score": 72,
-  "authority_score": 68,
-  "clarity_score": 75,
-  "action_verbs_score": 65,
-  "tone_type": "confident",
-  "overall_assessment": "2-3 sentences about tone quality.",
-  "strengths": ["strength1","strength2"],
-  "improvements": ["improvement1","improvement2"],
-  "weak_phrases": ["weak phrase from resume"],
-  "strong_phrases": ["strong phrase from resume"]
-}`;
+  "tone_score": <real score for THIS resume>,
+  "authority_score": <real score>,
+  "clarity_score": <real score>,
+  "action_verbs_score": <real score>,
+  "tone_type": "<passive/neutral/confident/authoritative based on actual language>",
+  "overall_assessment": "<2-3 specific sentences about THIS resume's tone with examples>",
+  "strengths": ["<specific strength seen in this resume>", "<another specific strength>"],
+  "improvements": ["<specific improvement needed>", "<another improvement>"],
+  "weak_phrases": ["<actual weak phrase found in the resume>", "<another weak phrase>"],
+  "strong_phrases": ["<actual strong phrase found in resume>", "<another strong phrase>"]
+}
 
-  const raw    = await askGroq(system, user, 600);
-  console.log("Tone →", raw.slice(0, 120));
+Start directly with {`;
+
+  const raw    = await askGroq(prompt, 700);
   const result = extractJSON(raw);
+  console.log("Tone result:", result ? `score=${result.tone_score}` : "FAILED - using fallback");
   if (result && typeof result.tone_score === "number") return result;
+
+  // Smart fallback — analyze the resume ourselves
+  const actionVerbs = ["led", "built", "developed", "created", "designed", "implemented",
+                       "managed", "improved", "reduced", "increased", "achieved", "delivered",
+                       "launched", "optimized", "architected", "engineered"];
+  const verbCount   = actionVerbs.filter(v => resumeText.toLowerCase().includes(v)).length;
+  const hasNumbers  = /\d+%|\d+x|\d+ users|\d+ projects/i.test(resumeText);
+  const verbScore   = Math.min(100, verbCount * 12);
+  const toneScore   = Math.min(100, 50 + verbCount * 6 + (hasNumbers ? 15 : 0));
+
   return {
-    tone_score: 65, authority_score: 60, clarity_score: 70, action_verbs_score: 55,
-    tone_type: "neutral",
-    overall_assessment: "The resume uses professional language but could benefit from stronger action verbs.",
-    strengths: ["Professional language used"], improvements: ["Use stronger action verbs"],
-    weak_phrases: [], strong_phrases: []
+    tone_score: toneScore,
+    authority_score: Math.max(40, toneScore - 8),
+    clarity_score: Math.min(100, toneScore + 5),
+    action_verbs_score: verbScore,
+    tone_type: toneScore >= 75 ? "confident" : toneScore >= 60 ? "neutral" : "passive",
+    overall_assessment: `Resume uses ${verbCount} action verbs${hasNumbers ? " and includes quantified achievements" : " but lacks quantified achievements"}. ${toneScore >= 70 ? "Overall tone is professional and confident." : "Adding stronger action verbs and measurable results would improve the tone significantly."}`,
+    strengths: [
+      verbCount > 3 ? "Uses action verbs in descriptions" : "Has clear structure",
+      hasNumbers ? "Includes quantified achievements" : "Professional language used"
+    ],
+    improvements: [
+      verbCount < 5 ? "Add more strong action verbs (Led, Built, Achieved, Delivered)" : "Vary action verbs across sections",
+      !hasNumbers ? "Add measurable results (increased by 30%, served 500+ users)" : "Add more metrics to project descriptions"
+    ],
+    weak_phrases: [],
+    strong_phrases: []
   };
 }
 
@@ -315,20 +434,21 @@ app.post("/analyze", async (req, res) => {
     const cleanJD     = cleanText(jobdescription);
 
     console.log(`\n📄 Resume: ${cleanResume.length} chars | JD: ${cleanJD.length} chars`);
+    console.log("Resume preview:", cleanResume.slice(0, 100));
 
     if (cleanResume.length < 50)
-      return res.status(400).json({ error: "Resume text too short. Please paste your resume text directly in the text box." });
+      return res.status(400).json({ error: "Resume text too short. Please paste your resume text directly." });
 
-    console.log("Step 1: Extracting resume skills...");
+    // Step 1: Extract skills
+    console.log("\nStep 1: Resume skills...");
     const resumeSkills = await extractResumeSkills(cleanResume);
-    console.log(`  Found ${resumeSkills.length}:`, resumeSkills.slice(0, 6).join(", "));
 
-    await wait(600);
+    await wait(700);
 
-    console.log("Step 2: Extracting JD skills...");
+    console.log("Step 2: JD skills...");
     const jdSkills = await extractJDSkills(cleanJD);
-    console.log(`  Found ${jdSkills.length}:`, jdSkills.slice(0, 6).join(", "));
 
+    // Match calculation
     const resumeLower   = resumeSkills.map(s => s.toLowerCase().trim());
     const matchedSkills = jdSkills.filter(skill => {
       const sl = skill.toLowerCase().trim();
@@ -340,31 +460,30 @@ app.post("/analyze", async (req, res) => {
     const matchScore        = Math.round((matchedSkills.length / Math.max(jdSkills.length, 1)) * 100);
     const importantKeywords = jdSkills.slice(0, 6);
 
-    console.log(`Match: ${matchScore}% (${matchedSkills.length}/${jdSkills.length})`);
+    console.log(`\n✅ Match: ${matchScore}% | Matched: ${matchedSkills.length} | Missing: ${missingSkills.length}`);
 
-    await wait(600);
+    await wait(700);
 
-    console.log("Step 3: Generating feedback...");
+    console.log("Step 3: Feedback...");
     const feedback = await getFeedback(cleanResume, cleanJD, matchScore, missingSkills);
 
-    await wait(600);
+    await wait(700);
 
-    console.log("Step 4: ATS analysis...");
+    console.log("Step 4: ATS...");
     const atsResult = await getATS(cleanResume);
 
-    await wait(600);
+    await wait(700);
 
-    console.log("Step 5: Keyword analysis...");
+    console.log("Step 5: Keywords...");
     const kwResult = await getKeywords(cleanResume, cleanJD);
 
-    await wait(600);
+    await wait(700);
 
-    console.log("Step 6: Tone analysis...");
+    console.log("Step 6: Tone...");
     const toneResult = await getTone(cleanResume);
 
-    console.log("Step 7: Getting learning resources...");
+    console.log("Step 7: Learning resources...");
     const learningResources = getLearningResources(missingSkills);
-    console.log(`  Resources found: ${learningResources.length}`);
 
     if (userId) {
       await User.findByIdAndUpdate(userId, {
@@ -379,7 +498,7 @@ app.post("/analyze", async (req, res) => {
       }).catch(e => console.error("MongoDB save error:", e.message));
     }
 
-    console.log("✅ Analysis complete!\n");
+    console.log("\n✅ Analysis complete!");
 
     res.json({
       match_score:        matchScore,
